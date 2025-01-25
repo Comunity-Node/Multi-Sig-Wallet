@@ -8,6 +8,12 @@ interface IERC20 {
     function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
 }
 
+interface IStakingContract {
+    function stake(uint256 amount) external;
+    function unstake(uint256 amount) external;
+    function claimRewards() external;
+}
+
 contract MultiSigWallet {
     address[] public owners;
     uint public required;
@@ -25,12 +31,24 @@ contract MultiSigWallet {
         bool executed;
         uint approvalCount;
         bool isTokenTransaction;
-        address tokenAddress;  // ERC-20 token address for token transactions
+        bool isStakingTransaction; 
+        bool isUnstakingTransaction; 
+        bool isClaimRewardTransaction; 
+        address tokenAddress; 
+        address stakingContractAddress;  
     }
     
     event Deposit(address indexed sender, uint amount);
     event TokenDeposit(address indexed sender, address indexed token, uint amount);
-    event TransactionCreated(uint indexed transactionId, address indexed to, uint amount, bool isTokenTransaction);
+    event TransactionCreated(
+        uint indexed transactionId, 
+        address indexed to, 
+        uint amount, 
+        bool isTokenTransaction, 
+        bool isStakingTransaction,
+        bool isUnstakingTransaction,
+        bool isClaimRewardTransaction
+    );
     event TransactionExecuted(uint indexed transactionId);
     event TransactionApproved(uint indexed transactionId, address indexed owner);
     
@@ -75,20 +93,41 @@ contract MultiSigWallet {
         emit Deposit(msg.sender, msg.value);
     }
     
-    function createTransaction(address _to, uint _amount, bool _isTokenTransaction) public onlyOwner {
+    function createTransaction(
+        address _to, 
+        uint _amount, 
+        bool _isTokenTransaction, 
+        bool _isStakingTransaction,
+        bool _isUnstakingTransaction,
+        bool _isClaimRewardTransaction,
+        address _stakingContractAddress
+    ) public onlyOwner {
         uint transactionId = transactionCount;
+        
         transactions[transactionId] = Transaction({
             to: _to,
             amount: _amount,
             executed: false,
             approvalCount: 0,
             isTokenTransaction: _isTokenTransaction,
-            tokenAddress: tokenAddress 
+            isStakingTransaction: _isStakingTransaction,
+            isUnstakingTransaction: _isUnstakingTransaction,
+            isClaimRewardTransaction: _isClaimRewardTransaction,
+            tokenAddress: tokenAddress,
+            stakingContractAddress: _stakingContractAddress
         });
         
         transactionCount++;
         
-        emit TransactionCreated(transactionId, _to, _amount, _isTokenTransaction);
+        emit TransactionCreated(
+            transactionId, 
+            _to, 
+            _amount, 
+            _isTokenTransaction, 
+            _isStakingTransaction,
+            _isUnstakingTransaction,
+            _isClaimRewardTransaction
+        );
     }
     
     function approveTransaction(uint transactionId) public onlyOwner txExists(transactionId) notExecuted(transactionId) notApproved(transactionId) {
@@ -101,27 +140,31 @@ contract MultiSigWallet {
             executeTransaction(transactionId);
         }
     }
-    
-    function executeTransaction(uint transactionId) private txExists(transactionId) notExecuted(transactionId) {
+        function executeTransaction(uint transactionId) private txExists(transactionId) notExecuted(transactionId) {
         Transaction storage txn = transactions[transactionId];
         
         require(txn.approvalCount >= required, "Not enough approvals");
         
         txn.executed = true;
         
-        if (txn.isTokenTransaction) {
-            //  execute the ERC-20 transfer
+        if (txn.isStakingTransaction) {
+            require(IERC20(txn.tokenAddress).approve(txn.stakingContractAddress, txn.amount), "Token approval for staking failed");
+            IStakingContract(txn.stakingContractAddress).stake(txn.amount);
+        } else if (txn.isUnstakingTransaction) {
+            IStakingContract(txn.stakingContractAddress).unstake(txn.amount);
+        } else if (txn.isClaimRewardTransaction) {
+            IStakingContract(txn.stakingContractAddress).claimRewards();
+        } else if (txn.isTokenTransaction) {
             require(IERC20(txn.tokenAddress).transfer(txn.to, txn.amount), "Token transfer failed");
         } else {
-            // execute the Native transfer
             (bool success, ) = txn.to.call{value: txn.amount}("");
             require(success, "Transaction failed");
         }
         
         emit TransactionExecuted(transactionId);
     }
-    
-    function isApproved(uint transactionId) public view returns (bool) {
+
+        function isApproved(uint transactionId) public view returns (bool) {
         return transactions[transactionId].approvalCount > 0;
     }
     
